@@ -1,108 +1,86 @@
+--[[
+	registry.luau
+	Command registry + dispatcher.
+
+	Each command module is registered by name with an optional alias list.
+	On dispatch, the raw token list is run through `parser` and the resulting
+	structured args object is handed to the command callback. This keeps every
+	command on one consistent argument model.
+]]
+
 local libs = script.Parent
 
 --// Modules
 local types = require(libs:FindFirstChild("types"))
-
---// Locals
-local function createAliasTable()
-    local data = {}
-    local set = {}
-
-    local mt = {}
-    mt.__index = mt
-
-    function mt:insert(value)
-        if not set[value] then
-            set[value] = true
-            table.insert(data, value)
-        end
-    end
-
-    function mt:getAll()
-        return data
-    end
-
-    function mt:__len()
-        return #data
-    end
-
-    return setmetatable({}, mt)
-end
+local parser = require(libs:FindFirstChild("parser"))
+local log = require(libs:FindFirstChild("log"))
 
 --// Globals
 local reg = {}
-reg.commands = {} :: types.regtable
-reg.callevent = Instance.new("BindableEvent", script)
+reg.commands = {} :: { [string]: types.command }
 
-function reg:register(command:string, args:{types.args}?, callback: (args:{types.args}, cArgs:{string}) -> (), description:string?, manual:string|{string}?, signer:string?)
-	reg.commands[command] = {
-		arguments=args,
-		callback=callback,
-		description=description,
-		stored_aliases=createAliasTable(),	
-		alias=function(self, new:string|{string})
-			if typeof(new) == "string" then
-				table.insert(self.stored_aliases, new)
-				return
-			end
-			for _, x in pairs(new) do
-				table.insert(self.stored_aliases, x)
-			end
-		end,
-		signer=signer,
-		manual=manual,
+function reg:register(
+	command: string,
+	args: { types.args }?,
+	callback: (parsed: any) -> (),
+	description: string?,
+	manual: types.manual?,
+	signer: string?
+): types.command
+	local entry: types.command = {
+		name = command,
+		arguments = args,
+		callback = callback,
+		description = description,
+		manual = manual,
+		signer = signer,
+		aliases = {},
 	}
-	return reg.commands[command]
-end
 
-function reg:bindToCall(callback: (rcmd: string, args:{types.args}) -> ())
-	reg.callevent.Event:Connect(callback)
-end
-
-function reg:call(command: string, givenArgs: {string})
-	-- Resolve command or alias
-	local rcmd = reg.commands[command]
-	if not rcmd then
-		for _, data in pairs(reg.commands) do
-			if table.find(data.stored_aliases, command) then
-				rcmd = data
-				break
+	-- Add one or more aliases. Stored as a plain de-duplicated array so that
+	-- `table.find` works everywhere (the previous closure-wrapped table had an
+	-- empty array part, which silently broke every alias lookup).
+	function entry:alias(new: string | { string })
+		local list = if typeof(new) == "string" then { new } else new
+		for _, name in list do
+			if not table.find(self.aliases, name) then
+				table.insert(self.aliases, name)
 			end
 		end
 	end
-	if not rcmd then warn("[Cealshell] Invalid Command: " .. command); return end
 
-	-- Transform Arguments
-	local args = {}
-	local cArgs = {}
-	for _, x in pairs(givenArgs) do
-		local xNum = tonumber(x)
-		local xIsBool = (x == "true") or (x == "false")
-
-		if xNum ~= nil then
-			table.insert(args, xNum)
-		elseif xIsBool then
-			table.insert(args, x == "true")
-		elseif x:sub(1,1) == "-" then
-			table.insert(cArgs, x)
-		else
-			table.insert(args, x)
-		end
-	end
-
-	-- Call Functions
-	reg.callevent:Fire(rcmd, args, cArgs)
-	rcmd.callback(args, cArgs)
+	reg.commands[command] = entry
+	return entry
 end
 
-function reg:resolve(name: string)
-    if reg.commands[name] then return reg.commands[name] end
-    for _, data in pairs(reg.commands) do
-        if table.find(data.stored_aliases:getAll(), name) then
-            return data
-        end
-    end
-    return nil
+-- Resolve a command by its name or any of its aliases.
+function reg:resolve(name: string): types.command?
+	local direct = reg.commands[name]
+	if direct then
+		return direct
+	end
+	for _, entry in reg.commands do
+		if table.find(entry.aliases, name) then
+			return entry
+		end
+	end
+	return nil
+end
+
+-- Dispatch a command by name/alias with its raw token list.
+function reg:call(command: string, tokens: { string })
+	local entry = reg:resolve(command)
+	if not entry then
+		log.error(("Unknown command '%s'. Type '--c help' for a list."):format(tostring(command)))
+		return
+	end
+
+	local parsed = parser.parse(tokens)
+
+	local ok, err = pcall(entry.callback, parsed)
+	if not ok then
+		log.error(("Command '%s' failed: %s"):format(command, tostring(err)))
+	end
 end
 
 return reg

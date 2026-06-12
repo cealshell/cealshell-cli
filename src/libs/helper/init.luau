@@ -2,39 +2,10 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 
---// Modules
-local types = require(script.Parent:FindFirstChild("types"))
-
 --// Globals
+-- Argument parsing now lives in `libs/parser`; this helper only owns the
+-- on-disk (.cealshell) storage layout.
 local helper = {}
-
-function helper:getNamedArg(argName:string, args:{types.args})
-	for _, x in pairs(args) do
-		if typeof(x) ~= "string" then continue end
-		if x:sub(1, 2+argName:len()+1) == "--"..argName.."=" then
-			return x:sub(2+argName:len()+1)
-		end
-	end
-    return nil
-end
-
-function helper:doesArgExist(argName:string, args:{types.args})
-	for j, x in pairs(args) do
-		if typeof(x) ~= "string" then continue end
-		if x:sub(1, 2+argName:len()) == "--"..argName then
-			return true, j
-		end
-		if x:sub(1, 1) == "-" then
-			local flags = x:sub(2)
-			for i = 1, #flags do
-				if flags:sub(i,i) == argName then
-					return true, j
-				end
-			end
-		end
-	end
-    return nil, 1
-end
 
 function helper:ensureCealshellPath(_shared: boolean?)
 	local f

@@ -1,51 +1,61 @@
 local libs = script.Parent.Parent.libs
-local types = require(libs.types)
+local log = require(libs.log)
+
 local plugin
 
+-- Settings that hold internal state and shouldn't be poked without advanced mode.
+local BLACKLIST = {
+	"cealshell:remotes",
+	"cealshell:remotes/default",
+	"cealshell:packages/keyring",
+}
+
+local function coerce(x: string): any
+	if x == "true" then
+		return true
+	elseif x == "false" then
+		return false
+	elseif x:match("^%-?%d+%.?%d*$") then
+		return tonumber(x) or 0
+	end
+	return x
+end
+
 return {
-    name = "config",
-    args = nil,
-	constructor = function(pl: Plugin) plugin = pl end,
-    callback = function(args:{types.args}, cArgs:{string})
-        local blacklist = {
-			"cealshell:remotes",
-			"cealshell:remotes/default",
-			"cealshell:packages/keyring"
-		}
-		local function format(x: string) : types.args
-			if x == "true" then
-				return true
-			elseif x == "false" then
-				return false
-			elseif x:match("^%-?%d+%.?%d*$") then
-				return tonumber(x) or 0
-			else
-				return x
-			end
+	name = "config",
+	constructor = function(pl: Plugin)
+		plugin = pl
+	end,
+	callback = function(p)
+		local key = p:arg(1)
+		local value = p:arg(2)
+
+		if not key then
+			log.usage("config <key> [value]")
+			return
 		end
 
-		local function run()
-			if args[2] then
-				plugin:SetSetting(tostring(args[1]), format(tostring(args[2])))
-				print(("[Cealshell] Successfully set '%s' to '%s' (%s)."):format(tostring(args[1]), tostring(args[2]), typeof(args[2])))
-			else
-				print(plugin:GetSetting(tostring(args[1])))
-			end
+		local advanced = plugin:GetSetting("cealshell:advanced") == true
+		if not advanced and table.find(BLACKLIST, key) then
+			log.warn("This setting is locked. Enable advanced mode: '--c config cealshell:advanced true'.")
+			return
 		end
 
-		if plugin:GetSetting("cealshell:advanced") == true then
-			run()
+		if value ~= nil then
+			local coerced = coerce(value)
+			plugin:SetSetting(key, coerced)
+			log.ok(("Set '%s' = %s (%s)."):format(key, tostring(coerced), typeof(coerced)))
 		else
-			if not table.find(blacklist, args[1]) then
-				run()
-			else
-				warn("[Cealshell] This configuration is locked behind advanced mode. Use '--c config cealshell:advanced true' to enable it.")
-				return
-			end
+			log.info(("%s = %s"):format(key, tostring(plugin:GetSetting(key))))
 		end
-    end,
-    description = nil,
-    manual = nil,
-    signer = "cealshell",
-    alias = {"cfg"},
+	end,
+	description = "Get or set a Cealshell setting.",
+	manual = {
+		"config <key> [value]",
+		"With no value, prints the current setting; with a value, sets it.",
+		"Values are coerced: true/false -> boolean, numbers -> number.",
+		"Some keys are locked behind advanced mode.",
+	},
+	signer = "cealshell",
+	alias = { "cfg" },
 }

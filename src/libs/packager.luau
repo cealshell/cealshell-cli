@@ -112,8 +112,8 @@ function packager:parse(package: string, remote_Url: string?)
         local packageName = restParts[1]
         local version = restParts[2] or "latest"
 
-        -- Build URL from remote, appending /api/packages if not already present
-        local apiPath = "/api/packages"
+        -- Build URL from remote, appending the v2 packages path if not present
+        local apiPath = "/api/v2/packages"
         if not remoteUrl:match(apiPath .. "/?$") then
             remoteUrl = remoteUrl .. apiPath
         end

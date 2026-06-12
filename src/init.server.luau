@@ -5,7 +5,7 @@
  \ \_____\  \ \_____\  \ \_\ \_\  \ \_____\  \/\_____\  \ \_\ \_\  \ \_____\  \ \_____\  \ \_____\ 
   \/_____/   \/_____/   \/_/\/_/   \/_____/   \/_____/   \/_/\/_/   \/_____/   \/_____/   \/_____/ 
                                                                                                    
-Simple and easy CLI tool with integrated package manager.
+Simple and easy CLI tool with an integrated package manager.
 Designed for Roblox Studio.
 Licensed with MIT under (c) janisfox 2026.
 Contact: https://github.com/janisfox
@@ -29,55 +29,62 @@ local pmanager = require(libs:FindFirstChild("pmanager"))
 pmanager:constructor(plugin)
 
 --// Binds
-LogService.MessageOut:Connect(function(str: string, messageType: Enum.MessageType) 
+-- Commands are typed into Studio's command bar as `--c <command> ...`. The bar
+-- echoes them to the log prefixed with "> ", and the leading `--c` keeps the
+-- line a no-op comment so the command bar never errors. We pick those echoes
+-- back up here and dispatch them.
+local COMMAND_PREFIX = "> --c "
+LogService.MessageOut:Connect(function(str: string, messageType: Enum.MessageType)
 	if messageType ~= Enum.MessageType.MessageOutput then return end
+	if str:sub(1, #COMMAND_PREFIX) ~= COMMAND_PREFIX then return end
 
-	local target = "> --c "
-	if str:sub(1, target:len()) == target then
-		str = str:sub(target:len()+1)
-	else
-		return
-	end
-	
-	local split = str:split(" ")
-	local cmd = split[1]
-	split[1] = nil
-	reg:call(cmd, split)
+	-- Strip the prefix, then split into a clean token list (no nil holes).
+	local tokens = str:sub(#COMMAND_PREFIX + 1):split(" ")
+	local cmd = table.remove(tokens, 1)
+	if not cmd or cmd == "" then return end
+
+	reg:call(cmd, tokens)
 end)
 
 --// Script
 
 --// Settings
-local remotes = {}
-local trustedremotes = {
+local trustedRemotes = {
 	"https://api.cealshell.dev/",
 	-- Trusted Partners will be added here in the future.
 }
+
+local remotes = {}
+local function addRemote(url: any)
+	if typeof(url) == "string" and url ~= "" and not table.find(remotes, url) then
+		table.insert(remotes, url)
+	end
+end
 
 local function saveRemotes()
 	plugin:SetSetting("cealshell:remotes", remotes)
 end
 
-local firstTime = plugin:GetSetting("cealshell:startup") or false
-if firstTime ~= true then
+-- First-run defaults.
+if plugin:GetSetting("cealshell:startup") ~= true then
 	plugin:SetSetting("cealshell:startup", true)
 	plugin:SetSetting("cealshell:advanced", false)
-	plugin:SetSetting("cealshell:remotes/default", "https://api.cealshell.dev/")
+	plugin:SetSetting("cealshell:remotes/default", trustedRemotes[1])
 	plugin:SetSetting("cealshell:packages/keyring", {})
-	
-	for _, remote in trustedremotes do
-		if not table.find(remotes, remote) then
-			table.insert(remotes, remote)
-		end
-	end
-	saveRemotes()
 end
+
+-- Load saved remotes first, then guarantee the trusted remotes are present.
+-- `addRemote` de-duplicates, so the list can't grow across sessions anymore.
 local savedRemotes = plugin:GetSetting("cealshell:remotes")
-if savedRemotes and typeof(savedRemotes) == "table" then
-	for _, x in pairs(savedRemotes) do
-		table.insert(remotes, x)
+if typeof(savedRemotes) == "table" then
+	for _, url in savedRemotes do
+		addRemote(url)
 	end
 end
+for _, url in trustedRemotes do
+	addRemote(url)
+end
+saveRemotes()
 
 -- Register
 local function iterate(folder: Instance)

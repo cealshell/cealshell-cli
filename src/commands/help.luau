@@ -1,31 +1,30 @@
 local libs = script.Parent.Parent.libs
-local types = require(libs.types)
 local registry = require(libs.registry)
+local log = require(libs.log)
 
 return {
-    name = "help",
-    args = nil,
-    callback = function()
-		print(string.rep("\n", 2))
-		print("cealshell() 2026 ©")
-		print("made by janis under Flux Studio")
-		print("--------------------------------")
-		for cmd:string, data:types.regtable in pairs(registry.commands) do
-			if data.arguments then
-				local argsString = ""
-				local i = 0
-				for x, y in data.arguments do
-					i += 1
-					argsString = argsString .. "<" .. x .. ">" .. (data.arguments[i+1] and " " or "")
-				end
-				print(cmd, argsString, "-", data.description or "no description")
-			else
-				print(cmd, "-", data.description or "no description")
-			end
+	name = "help",
+	callback = function()
+		log.line()
+		log.line("cealshell() — available commands")
+		log.line("Run '--c manual <command>' for details on any command.")
+		log.line("----------------------------------------------------")
+
+		local names = {}
+		for name in registry.commands do
+			table.insert(names, name)
 		end
-    end,
-    description = "Shows a list of available commands.",
-    manual = nil,
-    signer = "cealshell",
-    alias = {"?"},
+		table.sort(names)
+
+		for _, name in names do
+			local data = registry.commands[name]
+			local aliases = if #data.aliases > 0 then (" (" .. table.concat(data.aliases, ", ") .. ")") else ""
+			log.line(("  %s%s — %s"):format(name, aliases, data.description or "no description"))
+		end
+		log.line()
+	end,
+	description = "Show available commands.",
+	manual = "Lists every registered command with its aliases and a short description.",
+	signer = "cealshell",
+	alias = { "?" },
 }
