@@ -1,3 +1,24 @@
+--[[
+	.index — the per-scope package registry.
+
+	Each installed package is recorded as a Configuration child of this module,
+	carrying metadata as attributes (owner / slug / version / remote / installedAt)
+	so packages can later be listed and updated. The built instance is tagged
+	with `Cealshell` and annotated with CealshellPackage / CealshellVersion /
+	CealshellOwner attributes so it's identifiable in the Explorer.
+]]
+
+local CollectionService = game:GetService("CollectionService")
+
+local INSTALL_TAG = "Cealshell"
+
+export type meta = {
+	owner: string?,
+	slug: string?,
+	version: string?,
+	remote: string?,
+}
+
 local ix = {}
 
 function ix:read()
@@ -8,16 +29,43 @@ function ix:read()
     return t
 end
 
-function ix:register(name: string, source: Instance) : Configuration
+-- Read back the stored metadata for an installed package, if present.
+function ix:meta(name: string): meta?
+    local entry = script:FindFirstChild(name)
+    if not entry then return nil end
+    return {
+        owner = entry:GetAttribute("owner") :: any,
+        slug = entry:GetAttribute("slug") :: any,
+        version = entry:GetAttribute("version") :: any,
+        remote = entry:GetAttribute("remote") :: any,
+    }
+end
+
+function ix:register(name: string, source: Instance, packageMeta: meta?) : Configuration
     if type(name) ~= "string" then return end
     if typeof(source) ~= "Instance" then return end
 
     local x = Instance.new("Configuration", script)
     x.Name = name
 
+    -- Record metadata as attributes on the registry entry (drives updates).
+    if packageMeta then
+        if packageMeta.owner then x:SetAttribute("owner", packageMeta.owner) end
+        if packageMeta.slug then x:SetAttribute("slug", packageMeta.slug) end
+        if packageMeta.version then x:SetAttribute("version", packageMeta.version) end
+        if packageMeta.remote then x:SetAttribute("remote", packageMeta.remote) end
+    end
+    x:SetAttribute("installedAt", os.time())
+
     local src = Instance.new("ObjectValue", x)
     src.Name = "source"
     src.Value = source
+
+    -- Tag + annotate the built instance for visibility in the Explorer.
+    CollectionService:AddTag(source, INSTALL_TAG)
+    source:SetAttribute("CealshellPackage", (packageMeta and packageMeta.slug) or name)
+    if packageMeta and packageMeta.owner then source:SetAttribute("CealshellOwner", packageMeta.owner) end
+    if packageMeta and packageMeta.version then source:SetAttribute("CealshellVersion", packageMeta.version) end
 
     local idx = Instance.new("ModuleScript", script.Parent)
     idx.Name = name

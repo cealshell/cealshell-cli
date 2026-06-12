@@ -14,6 +14,7 @@ local log = require(libs.log)
 local ALLOWED = {
 	install = true, add = true, i = true,
 	remove = true, rm = true, uninstall = true,
+	update = true, up = true, upgrade = true,
 	list = true, ls = true,
 	search = true, find = true,
 	sync = true, refresh = true,
@@ -25,7 +26,7 @@ return {
 	callback = function(p)
 		local sub = p:arg(1)
 		if not sub then
-			log.usage("rbxpackage <install|remove|list|search|sync|remote> [...]")
+			log.usage("rbxpackage <install|remove|update|list|search|sync|remote> [...]")
 			return
 		end
 		if not ALLOWED[sub] then
@@ -42,7 +43,7 @@ return {
 		-- Forward everything after the subcommand, preserving flags/options.
 		target.callback(p:slice(2))
 	end,
-	description = "Package manager namespace (install/remove/list/search/sync/remote).",
+	description = "Package manager namespace (install/remove/update/list/search/sync/remote).",
 	manual = {
 		"rbxpackage <subcommand> [...]",
 		"Compatibility wrapper. Each subcommand is also a top-level command:",

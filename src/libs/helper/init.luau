@@ -7,6 +7,33 @@ local ServerStorage = game:GetService("ServerStorage")
 -- on-disk (.cealshell) storage layout.
 local helper = {}
 
+-- Ensure a clean, requireable package index exists at the scope root, sibling
+-- to the internal `.cealshell` store. Named `Packages` by convention; falls
+-- back to `CealPackages` if a foreign `Packages` already exists (e.g. Wally).
+-- Returns the manifest's name so callers can tell the user how to require it.
+local function ensureManifest(root: Instance): string
+	local function isOurs(inst: Instance?): boolean
+		return inst ~= nil and inst:IsA("ModuleScript") and inst:GetAttribute("Cealshell") == true
+	end
+
+	local name = "Packages"
+	local existing = root:FindFirstChild(name)
+	if existing and not isOurs(existing) then
+		name = "CealPackages"
+		existing = root:FindFirstChild(name)
+	end
+
+	if isOurs(existing) then
+		return name
+	end
+
+	local manifest = script:FindFirstChild("manifest"):Clone()
+	manifest.Name = name
+	manifest:SetAttribute("Cealshell", true)
+	manifest.Parent = root
+	return name
+end
+
 function helper:ensureCealshellPath(_shared: boolean?)
 	local f
 	if _shared then
@@ -33,6 +60,9 @@ function helper:ensureCealshellPath(_shared: boolean?)
 		ix.Parent  = f
 		ix.Name = ".index"
 	end
+
+	-- Expose the clean require surface (Packages module) next to the store.
+	ensureManifest(f.Parent)
 
 	return f
 end

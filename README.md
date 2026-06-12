@@ -22,6 +22,7 @@ Run `--c help` for the full list, or `--c manual <command>` for details on any o
 | --- | --- | --- |
 | `install <pkg>[@ver] …` | `add`, `i` | Install packages (auto-syncs on first use) |
 | `remove <pkg> …` | `rm`, `uninstall` | Remove installed packages |
+| `update [pkg…]` | `up`, `upgrade` | Update packages to their latest version |
 | `list [pattern]` | `ls` | List installed packages |
 | `search [query]` | `find` | Search the package catalogue |
 | `sync` | `refresh` | Refresh the keyring from all remotes |
@@ -40,6 +41,7 @@ Flags are consistent across commands and can be bundled:
 | --- | --- | --- |
 | `-s` | `--shared` | Use `ReplicatedStorage` instead of `ServerStorage` |
 | `-i` | `--into` | Install into the selected instance (untracked) |
+| `-a` | `--all` | (update) Update both scopes — your whole project |
 | `-y` | `--yes` | Skip the confirmation prompt |
 | `-f` | `--fresh` | (sync) Rebuild the keyring from scratch |
 | `-d` | `--debug` | (sync) Verbose per-remote output |
@@ -47,6 +49,7 @@ Flags are consistent across commands and can be bundled:
 ```
 --c install global:signal@1.2.0 -sy      # shared + auto-confirm, bundled
 --c remove signal --shared --yes
+--c update -a -y                          # update the whole project, no prompt
 --c sync -fd
 ```
 
@@ -57,6 +60,37 @@ Flags are consistent across commands and can be bundled:
 - `slug` — e.g. `signal`
 - `owner:slug` — e.g. `global:signal`
 - either of the above with `@version` — e.g. `global:signal@1.2.0` (defaults to `latest`)
+
+## Requiring packages
+
+Installed packages are exposed through a single `Packages` module at the root of
+the scope they were installed into. Index it by package name — modules are
+required lazily and cached:
+
+```lua
+-- server packages (ServerStorage)
+local Packages = require(game.ServerStorage.Packages)
+local Signal = Packages.Signal
+
+-- shared packages (ReplicatedStorage), e.g. installed with -s
+local Shared = require(game.ReplicatedStorage.Packages)
+local Promise = Shared.Promise
+```
+
+`Packages.list()` returns the names of everything installed in that scope. (If
+your place already has a `Packages` instance, Cealshell uses `CealPackages`
+instead; `install` prints the exact require path each time.)
+
+### How installs are tagged
+
+Every installed instance is tagged so it's easy to find and manage:
+
+- a `Cealshell` [CollectionService](https://create.roblox.com/docs/reference/engine/classes/CollectionService) tag, and
+- `CealshellPackage`, `CealshellOwner`, `CealshellVersion` attributes.
+
+The registry also records `owner`, `slug`, `version` and `remote` per package,
+which is what lets `update` know what's installed and whether a newer version
+exists.
 
 ## Remotes & the API
 

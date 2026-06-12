@@ -162,9 +162,36 @@ local function executeInstall(toInstall: { any }, targetFolder: Instance, intoSe
 		local parent = if ix then targetFolder:FindFirstChild("src") else targetFolder
 		local source = packager:build(pkg.data, parent)
 		if ix and source then
-			ix:register(pkg.name, source)
+			ix:register(pkg.name, source, {
+				owner = pkg.owner,
+				slug = pkg.slug,
+				version = pkg.version,
+				remote = pkg.remote,
+			})
 		end
-		log.ok(("Installed '%s'."):format(pkg.name))
+		log.ok(("Installed '%s' (%s)."):format(pkg.name, pkg.version or "latest"))
+	end
+
+	-- Tell the user how to require what they just installed.
+	if not intoSelection and #toInstall > 0 then
+		local root = targetFolder.Parent
+		local manifestName = if root:FindFirstChild("CealPackages") then "CealPackages" else "Packages"
+		log.info(("Require with: local Packages = require(game.%s.%s)"):format(root.Name, manifestName))
+	end
+end
+
+-- Internal: replace an already-installed package in place (used by update).
+local function rebuildInstalled(folder: Instance, name: string, data: any, meta: any)
+	local ix = require(folder:FindFirstChild(".index"))
+	local existing = ix:read()[name]
+	if existing and existing:FindFirstChild("source") and existing.source.Value then
+		existing.source.Value:Destroy()
+	end
+	ix:deregister(name)
+
+	local source = packager:build(data, folder:FindFirstChild("src"))
+	if source then
+		ix:register(name, source, meta)
 	end
 end
 
@@ -221,7 +248,15 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 			continue
 		end
 
-		table.insert(toInstall, { name = found.entry.name, slug = found.entry.slug, data = data })
+		table.insert(toInstall, {
+			name = found.entry.name,
+			slug = found.entry.slug,
+			owner = found.entry.owner,
+			remote = found.remote,
+			-- The resolved version the API actually served (not just "latest").
+			version = (data.package and data.package.version) or version,
+			data = data,
+		})
 	end
 
 	if #toInstall == 0 then
@@ -290,6 +325,105 @@ function pmanager:uninstall(opts: { shared: boolean?, yes: boolean? }, packages:
 				executeUninstall(toRemove, folder)
 			end,
 		}
+		log.info("Type '--c confirm' to proceed or '--c cancel' to abort.")
+	end
+end
+
+-- Ensure the keyring is populated, building it on demand. Returns nil on failure.
+local function ensureKeyring(): { [string]: any }?
+	local keyring = plugin:GetSetting("cealshell:packages/keyring")
+	if typeof(keyring) ~= "table" or next(keyring) == nil then
+		pmanager:sync()
+		keyring = plugin:GetSetting("cealshell:packages/keyring")
+	end
+	if typeof(keyring) ~= "table" then
+		return nil
+	end
+	return keyring
+end
+
+-- Update installed packages to the latest version available in the keyring.
+-- opts: { shared: boolean?, all: boolean?, yes: boolean? }
+--   default scope is server; `shared` targets ReplicatedStorage; `all` does both.
+-- `packages` optionally restricts the update to specific names/slugs.
+function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? }, packages: { string })
+	local keyring = ensureKeyring()
+	if not keyring then
+		log.warn("Keyring unavailable. Check your remotes and try '--c sync'.")
+		return
+	end
+	local available = indexKeyring(keyring)
+
+	local scopes = if opts.all then { false, true } elseif opts.shared then { true } else { false }
+	local filtering = #packages > 0
+
+	-- Build the plan: every installed package whose latest differs from installed.
+	local plan = {}
+	for _, shared in scopes do
+		local folder = helper:ensureCealshellPath(shared)
+		local ix = require(folder[".index"])
+		for name, entry in ix:read() do
+			local slug = entry:GetAttribute("slug") or name
+			if filtering and not table.find(packages, name) and not table.find(packages, slug) then
+				continue
+			end
+
+			local avail = available[slug]
+			if not avail then
+				log.warn(("'%s' isn't in any remote keyring; skipping."):format(name))
+				continue
+			end
+
+			local installedVersion = entry:GetAttribute("version")
+			local latest = avail.entry.latest_version
+			if latest and latest ~= installedVersion then
+				table.insert(plan, {
+					shared = shared,
+					name = name,
+					slug = slug,
+					entry = avail.entry,
+					remote = avail.remote,
+					from = installedVersion or "?",
+					to = latest,
+				})
+			end
+		end
+	end
+
+	if #plan == 0 then
+		log.ok("Everything is up to date.")
+		return
+	end
+
+	log.line()
+	log.line("Packages to update:")
+	for _, item in plan do
+		log.line(("  - %s  %s → %s  (%s)"):format(item.name, item.from, item.to, if item.shared then "shared" else "server"))
+	end
+	log.line()
+
+	local run = function()
+		for _, item in plan do
+			local data = fetchPayload(item.entry, item.remote, "latest")
+			if not data then
+				log.warn(("Failed to fetch update for '%s'."):format(item.name))
+				continue
+			end
+			local folder = helper:ensureCealshellPath(item.shared)
+			rebuildInstalled(folder, item.name, data, {
+				owner = item.entry.owner,
+				slug = item.slug,
+				version = (data.package and data.package.version) or item.to,
+				remote = item.remote,
+			})
+			log.ok(("Updated '%s' to %s."):format(item.name, item.to))
+		end
+	end
+
+	if opts.yes then
+		run()
+	else
+		pmanager.pendingOperation = { kind = "update", run = run }
 		log.info("Type '--c confirm' to proceed or '--c cancel' to abort.")
 	end
 end
