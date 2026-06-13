@@ -139,21 +139,41 @@ local function resolveReference(reference: string, available: { [string]: any })
 	return found, slug, version or "latest"
 end
 
--- Parse an `owner:repo[@version]` reference for the proxy fallback. Returns
--- nil when the reference has no owner (a bare slug, handled by the keyring).
-local function parseProxyRef(reference: string): ({ owner: string, repo: string, version: string }?)
-	if not reference:find(":") then
+-- Parse a `[provider/]owner:repo[@version]` reference for the proxy.
+--   janisfox:marble                -> github (default), janisfox/marble, latest
+--   github/janisfox:marble@1.0.0   -> github, janisfox/marble, 1.0.0
+-- Returns nil for a bare slug (no ':'), which only the keyring can resolve.
+-- `qualified` is true when an explicit `provider/` prefix was given, meaning the
+-- reference should bypass the keyring and go straight to the proxy.
+local function parseProxyRef(reference: string)
+	local head, version = reference, "latest"
+	local at = reference:find("@")
+	if at then
+		head = reference:sub(1, at - 1)
+		version = reference:sub(at + 1)
+	end
+	if version == "" then
+		version = "latest"
+	end
+
+	local provider, remainder, qualified = "github", head, false
+	local slash = head:find("/")
+	if slash then
+		provider = head:sub(1, slash - 1)
+		remainder = head:sub(slash + 1)
+		qualified = true
+	end
+
+	local colon = remainder:find(":")
+	if not colon then
 		return nil
 	end
-	local parts = reference:split(":")
-	local owner = parts[1]
-	local rest = table.concat(parts, ":", 2):split("@")
-	local repo = rest[1]
-	local version = rest[2] or "latest"
-	if owner == "" or repo == "" then
+	local owner = remainder:sub(1, colon - 1)
+	local repo = remainder:sub(colon + 1)
+	if provider == "" or owner == "" or repo == "" then
 		return nil
 	end
-	return { owner = owner, repo = repo, version = version }
+	return { provider = provider, owner = owner, repo = repo, version = version, qualified = qualified }
 end
 
 -- Validate + decode a proxy/v2 response envelope, returning its `data` payload.
@@ -181,7 +201,7 @@ local function fetchProxyPayload(ref: { owner: string, repo: string, version: st
 	end
 
 	for _, remote in candidates do
-		local url = packager:proxyUrl(ref.owner, ref.repo, ref.version, remote)
+		local url = packager:proxyUrl(ref.owner, ref.repo, ref.version, remote, ref.provider)
 		local data = decodeEnvelope(packager:retrieve(url))
 		if data then
 			return data, remote
@@ -192,6 +212,10 @@ end
 
 -- Fetch a resolved install payload for a single keyring entry + version.
 local function fetchPayload(entry: any, remote: string, version: string)
+	if typeof(entry.owner) ~= "string" or typeof(entry.slug) ~= "string" then
+		log.warn(("Keyring entry for '%s' is malformed; try '--c sync -f'."):format(tostring(entry.name or entry.slug)))
+		return nil
+	end
 	local url = packager:parse(("%s:%s@%s"):format(entry.owner, entry.slug, version), remote)
 	return decodeEnvelope(packager:retrieve(url))
 end
@@ -273,28 +297,42 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 	local available = if typeof(keyring) == "table" then indexKeyring(keyring) else {}
 
 	local toInstall = {}
+
+	-- Resolve a single proxy reference into a toInstall entry (or warn).
+	local function addFromProxy(proxyRef: any, reference: string)
+		local data, remote = fetchProxyPayload(proxyRef)
+		if not data then
+			log.warn(("Package '%s' not found on any remote (tried the %s proxy)."):format(reference, proxyRef.provider))
+			return
+		end
+		table.insert(toInstall, {
+			name = (data.package and data.package.repo) or proxyRef.repo,
+			slug = (data.package and data.package.slug) or proxyRef.repo:lower(),
+			owner = (data.package and data.package.owner) or proxyRef.owner,
+			remote = remote,
+			version = (data.package and data.package.version) or proxyRef.version,
+			data = data,
+		})
+	end
+
 	for _, reference in packages do
 		if typeof(reference) ~= "string" or reference == "" then continue end
 
+		local proxyRef = parseProxyRef(reference)
+
+		-- A provider-qualified ref (e.g. `github/janisfox:marble`) always goes
+		-- through the proxy and never touches the keyring.
+		if proxyRef and proxyRef.qualified then
+			addFromProxy(proxyRef, reference)
+			continue
+		end
+
 		local found, slug, version = resolveReference(reference, available)
 		if not found then
-			-- Not in the keyring. If the reference is `owner:repo`, resolve it
+			-- Not in the keyring. If it's an `owner:repo` reference, resolve it
 			-- on demand through the GitHub proxy instead of failing.
-			local proxyRef = parseProxyRef(reference)
 			if proxyRef then
-				local data, remote = fetchProxyPayload(proxyRef)
-				if data then
-					table.insert(toInstall, {
-						name = (data.package and data.package.repo) or proxyRef.repo,
-						slug = (data.package and data.package.slug) or proxyRef.repo:lower(),
-						owner = (data.package and data.package.owner) or proxyRef.owner,
-						remote = remote,
-						version = (data.package and data.package.version) or proxyRef.version,
-						data = data,
-					})
-				else
-					log.warn(("Package '%s' not found on any remote (tried the GitHub proxy)."):format(reference))
-				end
+				addFromProxy(proxyRef, reference)
 			else
 				log.warn(("Package '%s' not found. Run '--c sync' or check the name."):format(slug))
 			end
