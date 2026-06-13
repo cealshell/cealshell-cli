@@ -57,9 +57,25 @@ Flags are consistent across commands and can be bundled:
 
 `install` accepts:
 
-- `slug` — e.g. `signal`
+- `slug` — e.g. `signal` (resolved against the synced keyring)
 - `owner:slug` — e.g. `global:signal`
 - either of the above with `@version` — e.g. `global:signal@1.2.0` (defaults to `latest`)
+
+### On-demand GitHub installs (the proxy)
+
+Any public GitHub repo that ships a `.rbxm` release asset can be installed
+without being pre-registered. When an `owner:repo` reference isn't found in the
+keyring, the CLI resolves it through the registry's GitHub **proxy**:
+
+```
+--c install janisfox:marble          # → github.com/janisfox/marble (latest)
+--c install janisfox:marble@1.0.0    # a specific release
+```
+
+Behind the scenes this hits `https://api.cealshell.dev/github/janisfox:marble@latest`
+(the `/github/` provider prefix is the default, so it can be omitted in the API
+path too). Every proxied request is recorded in the central registry, so all
+installed/fetched packages are trackable and filterable by provider.
 
 ## Requiring packages
 

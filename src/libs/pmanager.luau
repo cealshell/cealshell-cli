@@ -139,19 +139,61 @@ local function resolveReference(reference: string, available: { [string]: any })
 	return found, slug, version or "latest"
 end
 
--- Fetch a resolved install payload for a single keyring entry + version.
-local function fetchPayload(entry: any, remote: string, version: string)
-	local url = packager:parse(("%s:%s@%s"):format(entry.owner, entry.slug, version), remote)
-	local body = packager:retrieve(url)
+-- Parse an `owner:repo[@version]` reference for the proxy fallback. Returns
+-- nil when the reference has no owner (a bare slug, handled by the keyring).
+local function parseProxyRef(reference: string): ({ owner: string, repo: string, version: string }?)
+	if not reference:find(":") then
+		return nil
+	end
+	local parts = reference:split(":")
+	local owner = parts[1]
+	local rest = table.concat(parts, ":", 2):split("@")
+	local repo = rest[1]
+	local version = rest[2] or "latest"
+	if owner == "" or repo == "" then
+		return nil
+	end
+	return { owner = owner, repo = repo, version = version }
+end
+
+-- Validate + decode a proxy/v2 response envelope, returning its `data` payload.
+local function decodeEnvelope(body: string?): any?
 	if not body then
 		return nil
 	end
-
 	local ok, parsed = pcall(HttpService.JSONDecode, HttpService, body)
 	if not ok or typeof(parsed) ~= "table" or not parsed.ok or typeof(parsed.data) ~= "table" then
 		return nil
 	end
 	return parsed.data
+end
+
+-- Fetch an install payload straight from the GitHub proxy (no keyring needed).
+-- Tries each configured remote until one resolves the repo.
+local function fetchProxyPayload(ref: { owner: string, repo: string, version: string }): (any?, string?)
+	local remotes = readTableSetting("cealshell:remotes", {})
+	-- Always include the default host so a clean install works with no remotes.
+	local candidates = { "https://api.cealshell.dev" }
+	for _, remote in remotes do
+		if not table.find(candidates, remote) then
+			table.insert(candidates, remote)
+		end
+	end
+
+	for _, remote in candidates do
+		local url = packager:proxyUrl(ref.owner, ref.repo, ref.version, remote)
+		local data = decodeEnvelope(packager:retrieve(url))
+		if data then
+			return data, remote
+		end
+	end
+	return nil
+end
+
+-- Fetch a resolved install payload for a single keyring entry + version.
+local function fetchPayload(entry: any, remote: string, version: string)
+	local url = packager:parse(("%s:%s@%s"):format(entry.owner, entry.slug, version), remote)
+	return decodeEnvelope(packager:retrieve(url))
 end
 
 -- Internal: actually create the instances.
@@ -226,11 +268,9 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 		pmanager:sync()
 		keyring = plugin:GetSetting("cealshell:packages/keyring")
 	end
-	if typeof(keyring) ~= "table" or next(keyring) == nil then
-		log.warn("Keyring is empty and no packages could be fetched. Check your remotes.")
-		return
-	end
-	local available = indexKeyring(keyring)
+	-- An empty keyring is not fatal: `owner:repo` references still resolve
+	-- on demand through the GitHub proxy. Only bare slugs need the keyring.
+	local available = if typeof(keyring) == "table" then indexKeyring(keyring) else {}
 
 	local toInstall = {}
 	for _, reference in packages do
@@ -238,7 +278,26 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 
 		local found, slug, version = resolveReference(reference, available)
 		if not found then
-			log.warn(("Package '%s' not found. Run '--c sync' or check the name."):format(slug))
+			-- Not in the keyring. If the reference is `owner:repo`, resolve it
+			-- on demand through the GitHub proxy instead of failing.
+			local proxyRef = parseProxyRef(reference)
+			if proxyRef then
+				local data, remote = fetchProxyPayload(proxyRef)
+				if data then
+					table.insert(toInstall, {
+						name = (data.package and data.package.repo) or proxyRef.repo,
+						slug = (data.package and data.package.slug) or proxyRef.repo:lower(),
+						owner = (data.package and data.package.owner) or proxyRef.owner,
+						remote = remote,
+						version = (data.package and data.package.version) or proxyRef.version,
+						data = data,
+					})
+				else
+					log.warn(("Package '%s' not found on any remote (tried the GitHub proxy)."):format(reference))
+				end
+			else
+				log.warn(("Package '%s' not found. Run '--c sync' or check the name."):format(slug))
+			end
 			continue
 		end
 

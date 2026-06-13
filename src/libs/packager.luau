@@ -123,6 +123,19 @@ function packager:parse(package: string, remote_Url: string?)
     end
 end
 
+-- Build a proxy URL for an on-demand GitHub package:
+--   <remote>/github/<owner>:<repo>@<version>
+-- This is the registry proxy surface: any public GitHub repo that ships a .rbxm
+-- release asset can be installed without being pre-registered, and the request
+-- is logged in the central registry. `provider` defaults to "github".
+function packager:proxyUrl(owner: string, repo: string, version: string?, remote_Url: string?, provider: string?)
+    local remoteUrl: string = remote_Url or "https://api.cealshell.dev"
+    if remoteUrl:sub(-1) == "/" then
+        remoteUrl = remoteUrl:sub(1, -2)
+    end
+    return ("%s/%s/%s:%s@%s"):format(remoteUrl, provider or "github", owner, repo, version or "latest")
+end
+
 function packager:retrieve(address: string)
     local success, data = pcall(function() 
         return HttpService:GetAsync(address)
