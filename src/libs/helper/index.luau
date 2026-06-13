@@ -21,6 +21,43 @@ export type meta = {
 
 local ix = {}
 
+-- Exposed so callers (e.g. the package manager) can find/skip tagged instances
+-- without hard-coding the tag name.
+ix.INSTALL_TAG = INSTALL_TAG
+
+-- Tag + annotate a built instance so it's identifiable in the Explorer AND
+-- self-describing enough to be updated later — even when it was installed into a
+-- selected instance and isn't tracked by any .index. Every field needed to
+-- re-fetch the package (name / slug / owner / version / remote) is stored as an
+-- attribute on the instance itself.
+function ix:annotate(source: Instance, name: string, packageMeta: meta?)
+	if typeof(source) ~= "Instance" then return end
+
+	CollectionService:AddTag(source, INSTALL_TAG)
+	source:SetAttribute("CealshellName", name)
+	source:SetAttribute("CealshellPackage", (packageMeta and packageMeta.slug) or name)
+	if packageMeta then
+		if packageMeta.slug then source:SetAttribute("CealshellSlug", packageMeta.slug) end
+		if packageMeta.owner then source:SetAttribute("CealshellOwner", packageMeta.owner) end
+		if packageMeta.version then source:SetAttribute("CealshellVersion", packageMeta.version) end
+		if packageMeta.remote then source:SetAttribute("CealshellRemote", packageMeta.remote) end
+	end
+end
+
+-- Read back the metadata stored on a tagged instance by ix:annotate.
+function ix:readAnnotation(source: Instance): { name: string, slug: string?, owner: string?, version: string?, remote: string? }?
+	if typeof(source) ~= "Instance" then return nil end
+	local name = source:GetAttribute("CealshellName") or source:GetAttribute("CealshellPackage")
+	if not name then return nil end
+	return {
+		name = name :: any,
+		slug = source:GetAttribute("CealshellSlug") :: any,
+		owner = source:GetAttribute("CealshellOwner") :: any,
+		version = source:GetAttribute("CealshellVersion") :: any,
+		remote = source:GetAttribute("CealshellRemote") :: any,
+	}
+end
+
 function ix:read()
     local t = {}
     for _, x: Configuration in script:GetChildren() do
@@ -61,11 +98,9 @@ function ix:register(name: string, source: Instance, packageMeta: meta?) : Confi
     src.Name = "source"
     src.Value = source
 
-    -- Tag + annotate the built instance for visibility in the Explorer.
-    CollectionService:AddTag(source, INSTALL_TAG)
-    source:SetAttribute("CealshellPackage", (packageMeta and packageMeta.slug) or name)
-    if packageMeta and packageMeta.owner then source:SetAttribute("CealshellOwner", packageMeta.owner) end
-    if packageMeta and packageMeta.version then source:SetAttribute("CealshellVersion", packageMeta.version) end
+    -- Tag + annotate the built instance for visibility in the Explorer and so it
+    -- carries everything an update needs (shared with untracked into-selection installs).
+    ix:annotate(source, name, packageMeta)
 
     local idx = Instance.new("ModuleScript", script.Parent)
     idx.Name = name

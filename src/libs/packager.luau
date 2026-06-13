@@ -154,6 +154,7 @@ function packager:build(package: {instances: {}}, parent: Instance)
     end
     
     local function buildInstance(data, parentInstance)
+        if data.ClassName == "PackageLink" then return nil end
         local instance = Instance.new(data.ClassName)
         instance.Name = data.Name
 

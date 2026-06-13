@@ -12,9 +12,13 @@ local libs = script.Parent
 local packager = require(libs:FindFirstChild("packager"))
 local helper = require(libs:FindFirstChild("helper"))
 local log = require(libs:FindFirstChild("log"))
+-- The .index template module also exposes the tag name + annotate/readAnnotation
+-- helpers used to tag and rediscover instance-installed (into-selection) packages.
+local ixlib = require(libs:FindFirstChild("helper"):FindFirstChild("index"))
 
 local HttpService = game:GetService("HttpService")
 local Selection = game:GetService("Selection")
+local CollectionService = game:GetService("CollectionService")
 
 local plugin: Plugin
 local pmanager = {}
@@ -225,15 +229,20 @@ local function executeInstall(toInstall: { any }, targetFolder: Instance, intoSe
 	local ix = if intoSelection then nil else require(targetFolder:FindFirstChild(".index"))
 
 	for _, pkg in toInstall do
-		local parent = if ix then targetFolder:FindFirstChild("src") else targetFolder
+		local parent = ix and targetFolder:FindFirstChild("src") or targetFolder
 		local source = packager:build(pkg.data, parent)
+		local meta = {
+			owner = pkg.owner,
+			slug = pkg.slug,
+			version = pkg.version,
+			remote = pkg.remote,
+		}
 		if ix and source then
-			ix:register(pkg.name, source, {
-				owner = pkg.owner,
-				slug = pkg.slug,
-				version = pkg.version,
-				remote = pkg.remote,
-			})
+			ix:register(pkg.name, source, meta)
+		elseif source then
+			-- Untracked install into a selected instance: still tag + annotate it so
+			-- it's identifiable and `update` can rediscover and upgrade it later.
+			ixlib:annotate(source, pkg.name, meta)
 		end
 		log.ok(("Installed '%s' (%s)."):format(pkg.name, pkg.version or "latest"))
 	end
@@ -259,6 +268,19 @@ local function rebuildInstalled(folder: Instance, name: string, data: any, meta:
 	if source then
 		ix:register(name, source, meta)
 	end
+end
+
+-- Internal: replace an instance-installed (into-selection) package in place.
+-- These have no .index entry — they're identified solely by the Cealshell tag +
+-- attributes — so we rebuild into the old instance's parent and re-annotate.
+local function rebuildStandalone(source: Instance, name: string, data: any, meta: any): Instance?
+	local parent = source.Parent
+	source:Destroy()
+	local newSource = packager:build(data, parent)
+	if newSource then
+		ixlib:annotate(newSource, name, meta)
+	end
+	return newSource
 end
 
 -- Internal: actually remove the instances.
@@ -456,6 +478,22 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 
 	-- Build the plan: every installed package whose latest differs from installed.
 	local plan = {}
+
+	-- Track every .index-managed source instance (across BOTH scopes, regardless
+	-- of the requested scope) so the standalone pass below never double-handles
+	-- a tracked package's instance.
+	local managedSources: { [Instance]: boolean } = {}
+	for _, shared in { false, true } do
+		local folder = helper:ensureCealshellPath(shared)
+		local ix = require(folder[".index"])
+		for _, entry in ix:read() do
+			local srcVal = entry:FindFirstChild("source")
+			if srcVal and srcVal.Value then
+				managedSources[srcVal.Value] = true
+			end
+		end
+	end
+
 	for _, shared in scopes do
 		local folder = helper:ensureCealshellPath(shared)
 		local ix = require(folder[".index"])
@@ -487,6 +525,56 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 		end
 	end
 
+	-- Standalone pass: instance-installed (into-selection) packages aren't in any
+	-- .index — they're identified by the Cealshell tag + attributes. Rediscover
+	-- them so they can be updated too. Keyring-resolvable ones compare cheaply;
+	-- proxy-only ones are resolved on demand to learn their latest version.
+	for _, source in CollectionService:GetTagged(ixlib.INSTALL_TAG) do
+		if managedSources[source] then
+			continue
+		end
+		local ann = ixlib:readAnnotation(source)
+		if not ann then
+			continue
+		end
+		local slug = ann.slug or ann.name
+		if filtering and not table.find(packages, ann.name) and not table.find(packages, slug) then
+			continue
+		end
+
+		local avail = slug and available[slug]
+		local entry, remote, latest, data
+		if avail then
+			entry, remote, latest = avail.entry, avail.remote, avail.entry.latest_version
+		elseif ann.owner then
+			-- Not in the keyring — resolve the latest straight from the proxy.
+			local payload, resolvedRemote = fetchProxyPayload({
+				provider = "github",
+				owner = ann.owner,
+				repo = ann.name,
+				version = "latest",
+			})
+			if payload then
+				data, remote = payload, resolvedRemote
+				latest = payload.package and payload.package.version
+			end
+		end
+
+		if latest and latest ~= ann.version then
+			table.insert(plan, {
+				standalone = source,
+				name = ann.name,
+				slug = slug,
+				owner = ann.owner,
+				entry = entry,
+				remote = remote,
+				data = data,
+				from = ann.version or "?",
+				to = latest,
+			})
+		end
+	end
+
 	if #plan == 0 then
 		log.ok("Everything is up to date.")
 		return
@@ -495,24 +583,40 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 	log.line()
 	log.line("Packages to update:")
 	for _, item in plan do
-		log.line(("  - %s  %s → %s  (%s)"):format(item.name, item.from, item.to, if item.shared then "shared" else "server"))
+		local scopeLabel = if item.standalone then "selection" elseif item.shared then "shared" else "server"
+		log.line(("  - %s  %s → %s  (%s)"):format(item.name, item.from, item.to, scopeLabel))
 	end
 	log.line()
 
 	local run = function()
 		for _, item in plan do
-			local data = fetchPayload(item.entry, item.remote, "latest")
+			-- Proxy-only standalone items may already carry their fetched payload.
+			local data = item.data
+			if not data then
+				if item.entry then
+					data = fetchPayload(item.entry, item.remote, "latest")
+				elseif item.owner then
+					data = fetchProxyPayload({ provider = "github", owner = item.owner, repo = item.name, version = "latest" })
+				end
+			end
 			if not data then
 				log.warn(("Failed to fetch update for '%s'."):format(item.name))
 				continue
 			end
-			local folder = helper:ensureCealshellPath(item.shared)
-			rebuildInstalled(folder, item.name, data, {
-				owner = item.entry.owner,
+
+			local meta = {
+				owner = item.owner or (item.entry and item.entry.owner),
 				slug = item.slug,
 				version = (data.package and data.package.version) or item.to,
 				remote = item.remote,
-			})
+			}
+
+			if item.standalone then
+				rebuildStandalone(item.standalone, item.name, data, meta)
+			else
+				local folder = helper:ensureCealshellPath(item.shared)
+				rebuildInstalled(folder, item.name, data, meta)
+			end
 			log.ok(("Updated '%s' to %s."):format(item.name, item.to))
 		end
 	end
