@@ -13,8 +13,8 @@ return {
 	description = "Update installed packages to their latest version.",
 	manual = {
 		"update [package...]",
-		"Updates installed packages whose latest keyring version differs from",
-		"the installed one. With no packages given, updates the whole scope.",
+		"Re-resolves installed packages against the GitHub proxy and updates any",
+		"whose latest version differs. With no packages given, updates the scope.",
 		"",
 		"Scope:",
 		"  (default)      Server packages (ServerStorage)",

@@ -7,7 +7,6 @@ local plugin
 local BLACKLIST = {
 	"cealshell:remotes",
 	"cealshell:remotes/default",
-	"cealshell:packages/keyring",
 }
 
 local function coerce(x: string): any

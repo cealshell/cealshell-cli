@@ -70,7 +70,6 @@ if plugin:GetSetting("cealshell:startup") ~= true then
 	plugin:SetSetting("cealshell:startup", true)
 	plugin:SetSetting("cealshell:advanced", false)
 	plugin:SetSetting("cealshell:remotes/default", trustedRemotes[1])
-	plugin:SetSetting("cealshell:packages/keyring", {})
 end
 
 -- Load saved remotes first, then guarantee the trusted remotes are present.

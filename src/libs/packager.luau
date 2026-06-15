@@ -69,65 +69,10 @@ end
 --// Globals
 local packager = {}
 
-function packager:parse(package: string, remote_Url: string?)
-    local remoteUrl: string = remote_Url or "https://api.cealshell.dev"
-
-    -- Normalize remote URL: remove trailing slash if present
-    if remoteUrl:sub(-1) == "/" then
-        remoteUrl = remoteUrl:sub(1, -2)
-    end
-
-    -- Check if package address contains "/" (full URL format)
-    if package:find("/") then
-        local s1 = package:split("/")
-        assert(#s1 >= 2, "Invalid address")
-
-        local s2 = s1[2]:split(":")
-        assert(#s2 >= 2, "Missing ':'")
-
-        local s3 = s2[2]:split("@")
-        assert(#s3 >= 2, "Missing '@'")
-
-        local url = s1[1]
-        local author = s2[1]
-        local packageName = s3[1]
-        local version = s3[2]
-
-        -- Preserve scheme from URL or default to https
-        local scheme = "https"
-        if url:match("^https?://") then
-            scheme = url:match("^(https?)://")
-            url = url:match("^https?://(.*)$")
-        end
-        
-        local final = ("%s://%s/%s/%s/%s"):format(scheme, url, author, packageName, version)
-        return final
-    else
-        -- Simplified format: author:package[@version]
-        local parts = package:split(":")
-        assert(#parts >= 2, "Invalid format. Use author:package or author:package@version")
-
-        local author = parts[1]
-        local restParts = table.concat(parts, ":", 2):split("@")
-        local packageName = restParts[1]
-        local version = restParts[2] or "latest"
-
-        -- Build URL from remote, appending the v2 packages path if not present
-        local apiPath = "/api/v2/packages"
-        if not remoteUrl:match(apiPath .. "/?$") then
-            remoteUrl = remoteUrl .. apiPath
-        end
-        
-        local final = remoteUrl .. "/" .. author .. "/" .. packageName .. "/" .. version
-        return final
-    end
-end
-
 -- Build a proxy URL for an on-demand GitHub package:
 --   <remote>/github/<owner>:<repo>@<version>
--- This is the registry proxy surface: any public GitHub repo that ships a .rbxm
--- release asset can be installed without being pre-registered, and the request
--- is logged in the central registry. `provider` defaults to "github".
+-- Any public GitHub repo that ships a .rbxm release asset can be installed
+-- without being pre-registered. `provider` defaults to "github".
 function packager:proxyUrl(owner: string, repo: string, version: string?, remote_Url: string?, provider: string?)
     local remoteUrl: string = remote_Url or "https://api.cealshell.dev"
     if remoteUrl:sub(-1) == "/" then

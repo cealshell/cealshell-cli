@@ -1,11 +1,11 @@
 --[[
 	pmanager.luau
-	The package manager core: keyring sync, install, uninstall, list and search.
+	The package manager core: install, uninstall, update and list.
 	Commands are thin wrappers around these methods.
 
-	Talks to the API v2 surface:
-		GET <remote>/api/v2/packages                       -> keyring feed
-		GET <remote>/api/v2/packages/<owner>/<slug>/<ver>  -> install payload
+	Cealshell is a pure GitHub proxy — there is no central catalogue/keyring.
+	Every package is installed by an explicit reference and resolved on demand:
+		GET <remote>/github/<owner>:<repo>@<version>  -> install payload
 ]]
 
 local libs = script.Parent
@@ -39,116 +39,16 @@ local function readTableSetting(key: string, fallback: { [any]: any }): { [any]:
 	return value
 end
 
--- Normalise a remote into its v2 packages endpoint.
-local function packagesEndpoint(remote: string): string
-	local trimmed = if remote:sub(-1) == "/" then remote:sub(1, -2) else remote
-	return ("%s/api/v2/packages"):format(trimmed)
-end
-
 -- Check if a package is installed (in the given storage scope).
 function pmanager:check(share: boolean, name: string): boolean
 	local f = helper:ensureCealshellPath(share)
 	return require(f[".index"]):read()[name] ~= nil
 end
 
--- Build a slug -> { entry, remote } lookup from the keyring.
-local function indexKeyring(keyring: { [string]: any }): { [string]: any }
-	local available = {}
-	for _, remoteData in keyring do
-		if typeof(remoteData) == "table" and typeof(remoteData.packages) == "table" then
-			for _, entry in remoteData.packages do
-				if entry.slug and not available[entry.slug] then
-					available[entry.slug] = { entry = entry, remote = remoteData.remote }
-				end
-			end
-		end
-	end
-	return available
-end
-
--- Sync the keyring from all configured remotes.
-function pmanager:sync(freshBuild: boolean?, debugP: boolean?): boolean
-	local start = tick()
-	local function ms(): string
-		return tostring(math.floor((tick() - start) * 1000))
-	end
-	local function dbg(message: string)
-		if debugP then log.info(message) end
-	end
-
-	log.info("Syncing keyring…")
-
-	local remotes = readTableSetting("cealshell:remotes", {})
-	if next(remotes) == nil then
-		log.warn("No remotes configured. Add one with '--c remote add <url>'.")
-		return false
-	end
-
-	local keyring = if freshBuild then {} else readTableSetting("cealshell:packages/keyring", {})
-
-	-- Drop keyring entries for remotes that no longer exist.
-	for remote in keyring do
-		if not table.find(remotes, remote) then
-			keyring[remote] = nil
-			dbg(("Removed deprecated remote %s."):format(remote))
-		end
-	end
-
-	-- Pull each remote's catalogue.
-	for _, remote in remotes do
-		local url = packagesEndpoint(remote)
-		dbg(("Fetching %s…"):format(url))
-		local ok, body = pcall(function()
-			return HttpService:GetAsync(url)
-		end)
-		if not ok then
-			log.warn(("Could not reach remote %s (%s)."):format(remote, tostring(body)))
-			continue
-		end
-
-		local decodeOk, decoded = pcall(HttpService.JSONDecode, HttpService, body)
-		if not decodeOk or typeof(decoded) ~= "table" or not decoded.ok or typeof(decoded.data) ~= "table" then
-			log.warn(("Remote %s returned an invalid response. Skipping."):format(remote))
-			continue
-		end
-
-		keyring[remote] = { packages = decoded.data.packages or {}, remote = remote }
-		dbg(("Synced %s (%d packages)."):format(remote, #(decoded.data.packages or {})))
-	end
-
-	plugin:SetSetting("cealshell:packages/keyring", keyring)
-	log.ok(("Keyring synced in %sms."):format(ms()))
-	return true
-end
-
--- Resolve a `[owner:]slug[@version]` reference against the keyring.
--- Returns the keyring entry, the resolved remote and the requested version.
-local function resolveReference(reference: string, available: { [string]: any })
-	local slug, version
-
-	if reference:find(":") then
-		-- owner:slug[@version] — owner is informational; slug is the key.
-		local afterOwner = reference:split(":")[2]
-		local parts = afterOwner:split("@")
-		slug, version = parts[1]:lower(), parts[2]
-	else
-		local parts = reference:split("@")
-		slug, version = parts[1]:lower(), parts[2]
-	end
-
-	local found = available[slug]
-	if not found then
-		return nil, slug
-	end
-	return found, slug, version or "latest"
-end
-
 -- Parse a `[provider/]owner:repo[@version]` reference for the proxy.
 --   janisfox:marble                -> github (default), janisfox/marble, latest
 --   github/janisfox:marble@1.0.0   -> github, janisfox/marble, 1.0.0
--- Returns nil for a bare slug (no ':'), which only the keyring can resolve.
--- `qualified` is true when an explicit `provider/` prefix was given, meaning the
--- reference should bypass the keyring and go straight to the proxy.
+-- Returns nil for a bare slug (no ':') — every install needs a full reference.
 local function parseProxyRef(reference: string)
 	local head, version = reference, "latest"
 	local at = reference:find("@")
@@ -192,7 +92,7 @@ local function decodeEnvelope(body: string?): any?
 	return parsed.data
 end
 
--- Fetch an install payload straight from the GitHub proxy (no keyring needed).
+-- Fetch an install payload straight from the GitHub proxy.
 -- Tries each configured remote until one resolves the repo.
 local function fetchProxyPayload(ref: { owner: string, repo: string, version: string }): (any?, string?)
 	local remotes = readTableSetting("cealshell:remotes", {})
@@ -212,16 +112,6 @@ local function fetchProxyPayload(ref: { owner: string, repo: string, version: st
 		end
 	end
 	return nil
-end
-
--- Fetch a resolved install payload for a single keyring entry + version.
-local function fetchPayload(entry: any, remote: string, version: string)
-	if typeof(entry.owner) ~= "string" or typeof(entry.slug) ~= "string" then
-		log.warn(("Keyring entry for '%s' is malformed; try '--c sync -f'."):format(tostring(entry.name or entry.slug)))
-		return nil
-	end
-	local url = packager:parse(("%s:%s@%s"):format(entry.owner, entry.slug, version), remote)
-	return decodeEnvelope(packager:retrieve(url))
 end
 
 -- Internal: actually create the instances.
@@ -307,17 +197,6 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 	local intoSelection = opts.into ~= nil
 	local targetFolder = if intoSelection then opts.into :: Instance else helper:ensureCealshellPath(opts.shared)
 
-	-- Use the cached keyring; build it on first use so the user never has to
-	-- remember to sync before their first install.
-	local keyring = plugin:GetSetting("cealshell:packages/keyring")
-	if typeof(keyring) ~= "table" or next(keyring) == nil then
-		pmanager:sync()
-		keyring = plugin:GetSetting("cealshell:packages/keyring")
-	end
-	-- An empty keyring is not fatal: `owner:repo` references still resolve
-	-- on demand through the GitHub proxy. Only bare slugs need the keyring.
-	local available = if typeof(keyring) == "table" then indexKeyring(keyring) else {}
-
 	local toInstall = {}
 
 	-- Resolve a single proxy reference into a toInstall entry (or warn).
@@ -340,42 +219,14 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 	for _, reference in packages do
 		if typeof(reference) ~= "string" or reference == "" then continue end
 
+		-- Every install is resolved on demand through the GitHub proxy. A bare
+		-- slug can't be resolved without an owner, so require a full reference.
 		local proxyRef = parseProxyRef(reference)
-
-		-- A provider-qualified ref (e.g. `github/janisfox:marble`) always goes
-		-- through the proxy and never touches the keyring.
-		if proxyRef and proxyRef.qualified then
+		if proxyRef then
 			addFromProxy(proxyRef, reference)
-			continue
+		else
+			log.warn(("Invalid reference '%s'. Use owner:repo[@version], e.g. 'janis:signal'."):format(reference))
 		end
-
-		local found, slug, version = resolveReference(reference, available)
-		if not found then
-			-- Not in the keyring. If it's an `owner:repo` reference, resolve it
-			-- on demand through the GitHub proxy instead of failing.
-			if proxyRef then
-				addFromProxy(proxyRef, reference)
-			else
-				log.warn(("Package '%s' not found. Run '--c sync' or check the name."):format(slug))
-			end
-			continue
-		end
-
-		local data = fetchPayload(found.entry, found.remote, version :: string)
-		if not data then
-			log.warn(("Failed to fetch '%s' from remote."):format(found.entry.name))
-			continue
-		end
-
-		table.insert(toInstall, {
-			name = found.entry.name,
-			slug = found.entry.slug,
-			owner = found.entry.owner,
-			remote = found.remote,
-			-- The resolved version the API actually served (not just "latest").
-			version = (data.package and data.package.version) or version,
-			data = data,
-		})
 	end
 
 	if #toInstall == 0 then
@@ -448,31 +299,11 @@ function pmanager:uninstall(opts: { shared: boolean?, yes: boolean? }, packages:
 	end
 end
 
--- Ensure the keyring is populated, building it on demand. Returns nil on failure.
-local function ensureKeyring(): { [string]: any }?
-	local keyring = plugin:GetSetting("cealshell:packages/keyring")
-	if typeof(keyring) ~= "table" or next(keyring) == nil then
-		pmanager:sync()
-		keyring = plugin:GetSetting("cealshell:packages/keyring")
-	end
-	if typeof(keyring) ~= "table" then
-		return nil
-	end
-	return keyring
-end
-
--- Update installed packages to the latest version available in the keyring.
+-- Update installed packages to their latest version on the GitHub proxy.
 -- opts: { shared: boolean?, all: boolean?, yes: boolean? }
 --   default scope is server; `shared` targets ReplicatedStorage; `all` does both.
 -- `packages` optionally restricts the update to specific names/slugs.
 function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? }, packages: { string })
-	local keyring = ensureKeyring()
-	if not keyring then
-		log.warn("Keyring unavailable. Check your remotes and try '--c sync'.")
-		return
-	end
-	local available = indexKeyring(keyring)
-
 	local scopes = if opts.all then { false, true } elseif opts.shared then { true } else { false }
 	local filtering = #packages > 0
 
@@ -503,21 +334,23 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 				continue
 			end
 
-			local avail = available[slug]
-			if not avail then
-				log.warn(("'%s' isn't in any remote keyring; skipping."):format(name))
+			local owner = entry:GetAttribute("owner")
+			if not owner then
+				log.warn(("'%s' has no source owner recorded; reinstall it to enable updates."):format(name))
 				continue
 			end
 
 			local installedVersion = entry:GetAttribute("version")
-			local latest = avail.entry.latest_version
+			local payload, remote = fetchProxyPayload({ provider = "github", owner = owner, repo = name, version = "latest" })
+			local latest = payload and payload.package and payload.package.version
 			if latest and latest ~= installedVersion then
 				table.insert(plan, {
 					shared = shared,
 					name = name,
 					slug = slug,
-					entry = avail.entry,
-					remote = avail.remote,
+					owner = owner,
+					remote = remote,
+					data = payload,
 					from = installedVersion or "?",
 					to = latest,
 				})
@@ -527,14 +360,13 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 
 	-- Standalone pass: instance-installed (into-selection) packages aren't in any
 	-- .index — they're identified by the Cealshell tag + attributes. Rediscover
-	-- them so they can be updated too. Keyring-resolvable ones compare cheaply;
-	-- proxy-only ones are resolved on demand to learn their latest version.
+	-- them so they can be updated too, resolving the latest from the proxy.
 	for _, source in CollectionService:GetTagged(ixlib.INSTALL_TAG) do
 		if managedSources[source] then
 			continue
 		end
 		local ann = ixlib:readAnnotation(source)
-		if not ann then
+		if not ann or not ann.owner then
 			continue
 		end
 		local slug = ann.slug or ann.name
@@ -542,23 +374,13 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 			continue
 		end
 
-		local avail = slug and available[slug]
-		local entry, remote, latest, data
-		if avail then
-			entry, remote, latest = avail.entry, avail.remote, avail.entry.latest_version
-		elseif ann.owner then
-			-- Not in the keyring — resolve the latest straight from the proxy.
-			local payload, resolvedRemote = fetchProxyPayload({
-				provider = "github",
-				owner = ann.owner,
-				repo = ann.name,
-				version = "latest",
-			})
-			if payload then
-				data, remote = payload, resolvedRemote
-				latest = payload.package and payload.package.version
-			end
-		end
+		local payload, remote = fetchProxyPayload({
+			provider = "github",
+			owner = ann.owner,
+			repo = ann.name,
+			version = "latest",
+		})
+		local latest = payload and payload.package and payload.package.version
 
 		if latest and latest ~= ann.version then
 			table.insert(plan, {
@@ -566,9 +388,8 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 				name = ann.name,
 				slug = slug,
 				owner = ann.owner,
-				entry = entry,
 				remote = remote,
-				data = data,
+				data = payload,
 				from = ann.version or "?",
 				to = latest,
 			})
@@ -590,14 +411,10 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 
 	local run = function()
 		for _, item in plan do
-			-- Proxy-only standalone items may already carry their fetched payload.
+			-- The latest payload was already fetched during planning.
 			local data = item.data
-			if not data then
-				if item.entry then
-					data = fetchPayload(item.entry, item.remote, "latest")
-				elseif item.owner then
-					data = fetchProxyPayload({ provider = "github", owner = item.owner, repo = item.name, version = "latest" })
-				end
+			if not data and item.owner then
+				data = fetchProxyPayload({ provider = "github", owner = item.owner, repo = item.name, version = "latest" })
 			end
 			if not data then
 				log.warn(("Failed to fetch update for '%s'."):format(item.name))
@@ -605,7 +422,7 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 			end
 
 			local meta = {
-				owner = item.owner or (item.entry and item.entry.owner),
+				owner = item.owner,
 				slug = item.slug,
 				version = (data.package and data.package.version) or item.to,
 				remote = item.remote,
@@ -640,27 +457,6 @@ function pmanager:list(share: boolean?, pattern: string?): { string }
 	end
 	table.sort(names)
 	return names
-end
-
--- Search the keyring catalogue. Returns matching entries.
-function pmanager:search(queryText: string): { any }
-	local keyring = plugin:GetSetting("cealshell:packages/keyring")
-	if typeof(keyring) ~= "table" then
-		return {}
-	end
-
-	local needle = queryText:lower()
-	local matches = {}
-	local seen = {}
-	for _, entry in indexKeyring(keyring) do
-		local e = entry.entry
-		local haystack = (tostring(e.name) .. " " .. tostring(e.slug) .. " " .. tostring(e.description or "")):lower()
-		if not seen[e.slug] and (needle == "" or haystack:find(needle, 1, true)) then
-			seen[e.slug] = true
-			table.insert(matches, e)
-		end
-	end
-	return matches
 end
 
 -- Confirm the pending operation.
