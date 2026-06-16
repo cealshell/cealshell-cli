@@ -26,7 +26,7 @@ Run `--c help` for the full list, or `--c manual <command>` for details on any o
 | `list [pattern]` | `ls` | List installed packages |
 | `search [query]` | `find` | Search the package catalogue |
 | `sync` | `refresh` | Refresh the keyring from all remotes |
-| `remote <list\|add\|remove> [url]` | `remotes` | Manage package sources |
+| `remote <show\|set\|reset> [url]` | `remotes` | Show or change the remote |
 | `config <key> [value]` | `cfg` | Get/set a setting |
 | `confirm` / `cancel` | `y` / `abort` | Confirm or abort a staged operation |
 | `help` / `manual <cmd>` | `?` / `man` | Help |
@@ -108,9 +108,23 @@ The registry also records `owner`, `slug`, `version` and `remote` per package,
 which is what lets `update` know what's installed and whether a newer version
 exists.
 
-## Remotes & the API
+## The remote & the API
 
-Packages are fetched from configured remotes (default: `https://api.cealshell.dev/`).
+Packages are fetched from a single remote (default: `https://api.cealshell.dev`).
+Change it with `remote set <url>`, inspect it with `remote show`, and restore the
+default with `remote reset`.
+
+To override the remote for **one install only**, prefix the reference with a host:
+
+```
+--c install cshl.xlch.dev/janisfox:marble    # resolves against https://cshl.xlch.dev
+```
+
+A prefix segment is treated as a remote when it looks like a host (a dot, a port,
+`localhost`, or an explicit `http(s)://` scheme); otherwise it's read as a provider
+(e.g. `github/…`, `codeberg/…`). The override is per-action and is recorded on the
+installed package so `update` re-fetches it from the same place.
+
 The CLI talks to the registry's **API v2** (`/api/v2/packages`), which returns a
 consistent envelope:
 

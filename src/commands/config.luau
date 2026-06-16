@@ -5,8 +5,7 @@ local plugin
 
 -- Settings that hold internal state and shouldn't be poked without advanced mode.
 local BLACKLIST = {
-	"cealshell:remotes",
-	"cealshell:remotes/default",
+	"cealshell:remote",
 }
 
 local function coerce(x: string): any

@@ -20,6 +20,9 @@ local HttpService = game:GetService("HttpService")
 local Selection = game:GetService("Selection")
 local CollectionService = game:GetService("CollectionService")
 
+-- The built-in remote, used when neither the reference nor the setting overrides it.
+local DEFAULT_REMOTE = "https://api.cealshell.dev"
+
 local plugin: Plugin
 local pmanager = {}
 pmanager.pendingOperation = nil :: any
@@ -28,15 +31,13 @@ function pmanager:constructor(_plugin: Plugin)
 	plugin = _plugin
 end
 
--- Read and validate a table-typed plugin setting, resetting it to `fallback`
--- when it's missing or corrupt. Replaces the old "read twice and hope" logic.
-local function readTableSetting(key: string, fallback: { [any]: any }): { [any]: any }
-	local value = plugin:GetSetting(key)
-	if typeof(value) ~= "table" then
-		value = fallback
-		plugin:SetSetting(key, value)
+-- The single configured remote, falling back to the built-in default.
+local function configuredRemote(): string
+	local remote = plugin:GetSetting("cealshell:remote")
+	if typeof(remote) == "string" and remote ~= "" then
+		return remote
 	end
-	return value
+	return DEFAULT_REMOTE
 end
 
 -- Check if a package is installed (in the given storage scope).
@@ -45,39 +46,76 @@ function pmanager:check(share: boolean, name: string): boolean
 	return require(f[".index"]):read()[name] ~= nil
 end
 
--- Parse a `[provider/]owner:repo[@version]` reference for the proxy.
---   janisfox:marble                -> github (default), janisfox/marble, latest
---   github/janisfox:marble@1.0.0   -> github, janisfox/marble, 1.0.0
+-- A prefix segment is a remote host (rather than a provider name) when it looks
+-- like a domain: it carries a dot, a port colon, or is bare `localhost`. Provider
+-- names (github, codeberg, …) are plain identifiers and never match.
+local function looksLikeRemote(segment: string): boolean
+	return segment:find("%.") ~= nil or segment:find(":") ~= nil or segment == "localhost"
+end
+
+-- Parse a `[remote/][provider/]owner:repo[@version]` reference for the proxy.
+--   janisfox:marble                      -> github, latest, configured remote
+--   github/janisfox:marble@1.0.0         -> provider github, 1.0.0
+--   cshl.xlch.dev/janisfox:marble        -> one-off remote https://cshl.xlch.dev
+--   cshl.xlch.dev/github/janisfox:marble -> one-off remote + explicit provider
+--   https://host:8080/janisfox:marble    -> one-off remote with explicit scheme
+-- A remote override applies to this install only and never touches the setting.
 -- Returns nil for a bare slug (no ':') — every install needs a full reference.
 local function parseProxyRef(reference: string)
-	local head, version = reference, "latest"
-	local at = reference:find("@")
+	local remaining, remote = reference, nil
+
+	-- An explicit scheme means the leading token is a full remote base URL; pull
+	-- it off whole so its own `:`/`/` characters don't confuse the segment split.
+	local scheme = remaining:match("^https?://")
+	if scheme then
+		local rest = remaining:sub(#scheme + 1)
+		local slash = rest:find("/")
+		if not slash then
+			return nil
+		end
+		remote = scheme .. rest:sub(1, slash - 1)
+		remaining = rest:sub(slash + 1)
+	end
+
+	local head, version = remaining, "latest"
+	local at = remaining:find("@")
 	if at then
-		head = reference:sub(1, at - 1)
-		version = reference:sub(at + 1)
+		head = remaining:sub(1, at - 1)
+		version = remaining:sub(at + 1)
 	end
 	if version == "" then
 		version = "latest"
 	end
 
-	local provider, remainder, qualified = "github", head, false
-	local slash = head:find("/")
-	if slash then
-		provider = head:sub(1, slash - 1)
-		remainder = head:sub(slash + 1)
-		qualified = true
+	-- `owner:repo` is always the final slash-delimited segment; any segments
+	-- before it are an optional remote host and/or provider name (any order).
+	local segments = head:split("/")
+	local target = table.remove(segments)
+	if not target then
+		return nil
 	end
 
-	local colon = remainder:find(":")
+	local provider = "github"
+	for _, segment in segments do
+		if segment == "" then
+			continue
+		elseif looksLikeRemote(segment) then
+			remote = "https://" .. segment
+		else
+			provider = segment
+		end
+	end
+
+	local colon = target:find(":")
 	if not colon then
 		return nil
 	end
-	local owner = remainder:sub(1, colon - 1)
-	local repo = remainder:sub(colon + 1)
+	local owner = target:sub(1, colon - 1)
+	local repo = target:sub(colon + 1)
 	if provider == "" or owner == "" or repo == "" then
 		return nil
 	end
-	return { provider = provider, owner = owner, repo = repo, version = version, qualified = qualified }
+	return { provider = provider, owner = owner, repo = repo, version = version, remote = remote }
 end
 
 -- Validate + decode a proxy/v2 response envelope, returning its `data` payload.
@@ -92,24 +130,17 @@ local function decodeEnvelope(body: string?): any?
 	return parsed.data
 end
 
--- Fetch an install payload straight from the GitHub proxy.
--- Tries each configured remote until one resolves the repo.
-local function fetchProxyPayload(ref: { owner: string, repo: string, version: string }): (any?, string?)
-	local remotes = readTableSetting("cealshell:remotes", {})
-	-- Always include the default host so a clean install works with no remotes.
-	local candidates = { "https://api.cealshell.dev" }
-	for _, remote in remotes do
-		if not table.find(candidates, remote) then
-			table.insert(candidates, remote)
-		end
-	end
-
-	for _, remote in candidates do
-		local url = packager:proxyUrl(ref.owner, ref.repo, ref.version, remote, ref.provider)
-		local data = decodeEnvelope(packager:retrieve(url))
-		if data then
-			return data, remote
-		end
+-- Fetch an install payload straight from the GitHub proxy. A per-reference remote
+-- (parsed from the reference, or a remote stored on an installed package) overrides
+-- the configured remote for that one call; otherwise the configured remote is used.
+local function fetchProxyPayload(
+	ref: { owner: string, repo: string, version: string, provider: string?, remote: string? }
+): (any?, string?)
+	local remote = ref.remote or configuredRemote()
+	local url = packager:proxyUrl(ref.owner, ref.repo, ref.version, remote, ref.provider)
+	local data = decodeEnvelope(packager:retrieve(url))
+	if data then
+		return data, remote
 	end
 	return nil
 end
@@ -341,7 +372,13 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 			end
 
 			local installedVersion = entry:GetAttribute("version")
-			local payload, remote = fetchProxyPayload({ provider = "github", owner = owner, repo = name, version = "latest" })
+			local payload, remote = fetchProxyPayload({
+				provider = "github",
+				owner = owner,
+				repo = name,
+				version = "latest",
+				remote = entry:GetAttribute("remote"),
+			})
 			local latest = payload and payload.package and payload.package.version
 			if latest and latest ~= installedVersion then
 				table.insert(plan, {
@@ -379,6 +416,7 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 			owner = ann.owner,
 			repo = ann.name,
 			version = "latest",
+			remote = ann.remote,
 		})
 		local latest = payload and payload.package and payload.package.version
 
@@ -414,7 +452,13 @@ function pmanager:update(opts: { shared: boolean?, all: boolean?, yes: boolean? 
 			-- The latest payload was already fetched during planning.
 			local data = item.data
 			if not data and item.owner then
-				data = fetchProxyPayload({ provider = "github", owner = item.owner, repo = item.name, version = "latest" })
+				data = fetchProxyPayload({
+					provider = "github",
+					owner = item.owner,
+					repo = item.name,
+					version = "latest",
+					remote = item.remote,
+				})
 			end
 			if not data then
 				log.warn(("Failed to fetch update for '%s'."):format(item.name))

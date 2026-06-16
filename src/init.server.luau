@@ -49,41 +49,24 @@ end)
 --// Script
 
 --// Settings
-local trustedRemotes = {
-	"https://api.cealshell.dev/",
-	-- Trusted Partners will be added here in the future.
-}
-
-local remotes = {}
-local function addRemote(url: any)
-	if typeof(url) == "string" and url ~= "" and not table.find(remotes, url) then
-		table.insert(remotes, url)
-	end
-end
-
-local function saveRemotes()
-	plugin:SetSetting("cealshell:remotes", remotes)
-end
+-- There is a single remote. The active one lives in the `cealshell:remote` setting
+-- (managed by the `remote` command); when unset, the built-in default is used. A
+-- reference can also carry a one-off remote override (see the install command).
 
 -- First-run defaults.
 if plugin:GetSetting("cealshell:startup") ~= true then
 	plugin:SetSetting("cealshell:startup", true)
 	plugin:SetSetting("cealshell:advanced", false)
-	plugin:SetSetting("cealshell:remotes/default", trustedRemotes[1])
 end
 
--- Load saved remotes first, then guarantee the trusted remotes are present.
--- `addRemote` de-duplicates, so the list can't grow across sessions anymore.
-local savedRemotes = plugin:GetSetting("cealshell:remotes")
-if typeof(savedRemotes) == "table" then
-	for _, url in savedRemotes do
-		addRemote(url)
-	end
+-- Migrate away from the old multi-remote model: drop the legacy list settings so
+-- they don't linger. The single-remote setting starts unset (i.e. the default).
+if plugin:GetSetting("cealshell:remotes") ~= nil then
+	plugin:SetSetting("cealshell:remotes", nil)
 end
-for _, url in trustedRemotes do
-	addRemote(url)
+if plugin:GetSetting("cealshell:remotes/default") ~= nil then
+	plugin:SetSetting("cealshell:remotes/default", nil)
 end
-saveRemotes()
 
 -- Register
 local function iterate(folder: Instance)
@@ -103,12 +86,6 @@ local function iterate(folder: Instance)
 	end
 end
 iterate(cmds)
-
--- Misc
-plugin.Unloading:Connect(function()
-	saveRemotes()
-end)
-
 
 --
 print("[Cealshell] Loaded in", math.floor((tick() - start)*10^3) .."ms")

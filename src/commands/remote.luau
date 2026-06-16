@@ -1,16 +1,10 @@
 local libs = script.Parent.Parent.libs
 local log = require(libs.log)
 
+-- The built-in remote, used whenever the `cealshell:remote` setting is unset.
+local DEFAULT_REMOTE = "https://api.cealshell.dev"
+
 local plugin
-
-local function getRemotes(): { string }
-	local remotes = plugin:GetSetting("cealshell:remotes")
-	return if typeof(remotes) == "table" then remotes else {}
-end
-
-local function saveRemotes(remotes: { string })
-	plugin:SetSetting("cealshell:remotes", remotes)
-end
 
 return {
 	name = "remote",
@@ -20,50 +14,36 @@ return {
 	callback = function(p)
 		local action = p:arg(1)
 		local url = p:arg(2)
-		local remotes = getRemotes()
 
-		if not action or action == "list" then
-			log.info("Configured remotes:")
-			if #remotes == 0 then
-				log.line("  (none)")
+		if not action or action == "show" or action == "get" or action == "list" then
+			local remote = plugin:GetSetting("cealshell:remote")
+			if typeof(remote) == "string" and remote ~= "" then
+				log.info(("Remote: %s"):format(remote))
+			else
+				log.info(("Remote: %s (default)"):format(DEFAULT_REMOTE))
 			end
-			for _, remote in remotes do
-				log.line("  - " .. remote)
-			end
-		elseif action == "add" then
+		elseif action == "set" then
 			if not url then
-				log.usage("remote add <url>")
+				log.usage("remote set <url>")
 				return
 			end
-			if table.find(remotes, url) then
-				log.info(("Remote '%s' is already configured."):format(url))
-				return
-			end
-			table.insert(remotes, url)
-			saveRemotes(remotes)
-			log.ok(("Added remote '%s'."):format(url))
-		elseif action == "remove" or action == "rm" or action == "delete" then
-			if not url then
-				log.usage("remote remove <url>")
-				return
-			end
-			local index = table.find(remotes, url)
-			if not index then
-				log.info(("Remote '%s' is not configured."):format(url))
-				return
-			end
-			table.remove(remotes, index)
-			saveRemotes(remotes)
-			log.ok(("Removed remote '%s'."):format(url))
+			plugin:SetSetting("cealshell:remote", url)
+			log.ok(("Remote set to '%s'."):format(url))
+		elseif action == "reset" or action == "clear" or action == "default" then
+			plugin:SetSetting("cealshell:remote", nil)
+			log.ok(("Remote reset to default (%s)."):format(DEFAULT_REMOTE))
 		else
-			log.usage("remote <list|add|remove> [url]")
+			log.usage("remote <show|set|reset> [url]")
 		end
 	end,
-	description = "Manage package remotes.",
+	description = "Show or change the package remote.",
 	manual = {
-		"remote list            List configured remotes",
-		"remote add <url>       Add a remote source",
-		"remote remove <url>    Remove a remote source",
+		"remote show           Print the active remote",
+		"remote set <url>      Set the remote used for installs",
+		"remote reset          Restore the built-in default remote",
+		"",
+		"There is a single remote. To override it for one install only, prefix the",
+		"reference with a host, e.g. 'install cshl.xlch.dev/janisfox:marble'.",
 	},
 	signer = "cealshell",
 	alias = { "remotes" },
