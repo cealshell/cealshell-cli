@@ -16,6 +16,8 @@ Website: https://cealshell.dev/
 local start = tick()
 --
 
+local VERSION = "v2.11"
+
 --// Services
 local LogService = game:GetService("LogService")
 
@@ -53,6 +55,8 @@ end)
 -- (managed by the `remote` command); when unset, the built-in default is used. A
 -- reference can also carry a one-off remote override (see the install command).
 
+plugin:SetSetting("cealshell:version", VERSION)
+
 -- First-run defaults.
 if plugin:GetSetting("cealshell:startup") ~= true then
 	plugin:SetSetting("cealshell:startup", true)
@@ -88,4 +92,4 @@ end
 iterate(cmds)
 
 --
-print("[Cealshell] Loaded in", math.floor((tick() - start)*10^3) .."ms")
+print("[Cealshell] Loaded", VERSION, "in", math.floor((tick() - start)*10^3) .."ms")
