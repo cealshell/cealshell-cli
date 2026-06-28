@@ -229,6 +229,10 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 	local targetFolder = if intoSelection then opts.into :: Instance else helper:ensureCealshellPath(opts.shared)
 
 	local toInstall = {}
+	-- Names already queued this run, so the same package referenced twice in one
+	-- command isn't built twice. Tracked installs are additionally checked against
+	-- what's already in the scope's .index below.
+	local queued: { [string]: boolean } = {}
 
 	-- Resolve a single proxy reference into a toInstall entry (or warn).
 	local function addFromProxy(proxyRef: any, reference: string)
@@ -237,8 +241,20 @@ function pmanager:install(opts: { shared: boolean?, into: Instance?, yes: boolea
 			log.warn(("Package '%s' not found on any remote (tried the %s proxy)."):format(reference, proxyRef.provider))
 			return
 		end
+		local name = (data.package and data.package.repo) or proxyRef.repo
+
+		-- Don't install the same package twice. Within a single command we skip a
+		-- repeated reference; for tracked installs we also skip anything already in
+		-- the target scope's .index (into-selection installs aren't tracked, so the
+		-- caller is free to place multiple copies in different instances).
+		if queued[name] or (not intoSelection and pmanager:check(opts.shared :: any, name)) then
+			log.info(("'%s' is already installed; skipping."):format(name))
+			return
+		end
+		queued[name] = true
+
 		table.insert(toInstall, {
-			name = (data.package and data.package.repo) or proxyRef.repo,
+			name = name,
 			slug = (data.package and data.package.slug) or proxyRef.repo:lower(),
 			owner = (data.package and data.package.owner) or proxyRef.owner,
 			remote = remote,
