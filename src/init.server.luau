@@ -61,6 +61,7 @@ plugin:SetSetting("cealshell:version", VERSION)
 if plugin:GetSetting("cealshell:startup") ~= true then
 	plugin:SetSetting("cealshell:startup", true)
 	plugin:SetSetting("cealshell:advanced", false)
+	plugin:SetSetting("cealshell:no_local_warning", false)
 end
 
 -- Migrate away from the old multi-remote model: drop the legacy list settings so
@@ -93,3 +94,6 @@ iterate(cmds)
 
 --
 print("[Cealshell] Loaded", VERSION, "in", math.floor((tick() - start)*10^3) .."ms")
+if (string.find(plugin.Name, ".rbxm") or string.find(plugin.Name, ".lua")) and plugin:GetSetting("cealshell:no_local_warning") == false then
+	warn("[Cealshell] WARNING: Cealshell is running on a local plugin, which can correlate with the official plugin from the marketplace.\nIf you aren't using the marketplace version, use `--c config cealshell:no_local_warning true` to hide this for future startups.\n(Keep in mind that you have to rerun this every reinstallation)")
+end
