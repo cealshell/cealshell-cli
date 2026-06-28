@@ -8,8 +8,7 @@ return {
 		print("roblox: @the_h0lysandwich")
 		print("discord: @_jxnis_")
 		print("------------")
-		print("moderated by flux studio")
-		print("discord: .gg/Vpsyd59r5X")
+		print("discord: cealshell.dev/discord")
     end,
     description = "Credits & Contacts for Cealshell.",
     manual = nil,
