@@ -61,6 +61,9 @@ plugin:SetSetting("cealshell:version", VERSION)
 if plugin:GetSetting("cealshell:startup") ~= true then
 	plugin:SetSetting("cealshell:startup", true)
 	plugin:SetSetting("cealshell:advanced", false)
+end
+
+if plugin:GetSetting("cealshell:no_local_warning") == nil then
 	plugin:SetSetting("cealshell:no_local_warning", false)
 end
 
